@@ -1,100 +1,160 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react'
 import {
-  createWideTimeseries,
-  rollupWideTimeseries,
-  buildRollupLadder,
-  formatVisibleColumnsLabel,
-  TIME_BUCKETS_PER_DAY
+  createKeyspaceDemo,
+  sliceByPrefixRange,
+  describePrefixRange,
+  buildPrefixFromSelection,
+  formatKey,
+  formatTimestampLabel,
+  PREFIX_LABELS,
+  MAX_PREFIX_DEPTH
 } from './dayjobGenerator'
 import './styles.css'
 
 function App() {
   const [dataset, setDataset] = useState(null)
-  const [visibleColumns, setVisibleColumns] = useState(1)
-  const [selectedSeries, setSelectedSeries] = useState('')
-  const [viewMode, setViewMode] = useState('table')
+  const [selectedPath, setSelectedPath] = useState('')
+  const [selectedEvent, setSelectedEvent] = useState('')
+  const [prefixDepth, setPrefixDepth] = useState(2)
+  const [selectedMetric, setSelectedMetric] = useState('requests')
+  const [viewMode, setViewMode] = useState('rows')
   const [isGenerating, setIsGenerating] = useState(false)
   const [generationConfig] = useState({
-    seriesCount: 24,
-    days: 30,
-    rawBucketCount: TIME_BUCKETS_PER_DAY,
+    pathCount: 32,
+    days: 21,
+    eventsPerDay: 16,
+    metricsPerEvent: 6,
     startDate: new Date('2024-01-01')
   })
 
   const regenerateData = useCallback(() => {
     setIsGenerating(true)
     setTimeout(() => {
-      const next = createWideTimeseries(generationConfig)
+      const next = createKeyspaceDemo(generationConfig)
       setDataset(next)
-      setSelectedSeries(next.series[0] || '')
-      setVisibleColumns(1)
+      setSelectedPath(next.paths[0] || '')
+      setSelectedEvent(next.events[0]?.eventId || '')
+      setPrefixDepth(2)
+      setSelectedMetric(next.metrics[0] || 'requests')
       setIsGenerating(false)
-    }, 30)
+    }, 20)
   }, [generationConfig])
 
   useEffect(() => {
     regenerateData()
   }, [regenerateData])
 
+  const paths = dataset?.paths || []
+  const events = dataset?.events || []
   const rows = dataset?.rows || []
-  const rawBucketCount = dataset?.rawBucketCount || TIME_BUCKETS_PER_DAY
-  const series = dataset?.series || []
+  const metrics = dataset?.metrics || []
+  const rawPrefixDepth = Math.max(1, Math.min(prefixDepth, MAX_PREFIX_DEPTH))
 
-  const selectedRows = useMemo(() => {
-    if (!selectedSeries) return rows.slice(0, 120)
-    return rows.filter(row => row.series === selectedSeries)
-  }, [rows, selectedSeries])
+  const selectedEventObject = useMemo(() => {
+    if (!selectedEvent) return null
+    return events.find(event => event.eventId === selectedEvent) || null
+  }, [events, selectedEvent])
 
-  const rolledRows = useMemo(() => {
-    if (!selectedRows.length) return []
-    return rollupWideTimeseries(selectedRows, visibleColumns, rawBucketCount)
-  }, [selectedRows, visibleColumns, rawBucketCount])
+  const prefix = useMemo(() => {
+    if (!selectedEventObject) return []
+    return buildPrefixFromSelection(
+      selectedEventObject.path,
+      selectedEventObject.timestamp,
+      rawPrefixDepth,
+      selectedMetric
+    )
+  }, [selectedEventObject, rawPrefixDepth, selectedMetric])
 
-  const ladder = useMemo(() => buildRollupLadder(selectedRows, rawBucketCount), [selectedRows, rawBucketCount])
-  const selectedRollup = ladder.find(step => step.visibleColumns === visibleColumns) || ladder[0]
+  const prefixRows = useMemo(() => sliceByPrefixRange(rows, prefix), [rows, prefix])
 
-  const maxColumns = rawBucketCount
+  const groupedByEvent = useMemo(() => {
+    const groups = new Map()
+    for (const row of prefixRows) {
+      const eventKey = `${row.path}|${row.timestamp}`
+      if (!groups.has(eventKey)) {
+        groups.set(eventKey, {
+          path: row.path,
+          timestamp: row.timestamp,
+          eventId: row.eventId,
+          rows: []
+        })
+      }
+      groups.get(eventKey).rows.push(row)
+    }
+    return Array.from(groups.values())
+  }, [prefixRows])
+
+  const rangeInfo = useMemo(() => describePrefixRange(prefix), [prefix])
+
+  const firstVisibleRows = useMemo(() => {
+    if (viewMode === 'events') return groupedByEvent.slice(0, 50)
+    return prefixRows.slice(0, 120)
+  }, [viewMode, groupedByEvent, prefixRows])
+
+  const selectedPathRows = useMemo(() => {
+    if (!selectedPath) return rows.slice(0, 120)
+    return rows.filter(row => row.path === selectedPath)
+  }, [rows, selectedPath])
+
+  const selectedPathEvents = useMemo(() => {
+    if (!selectedPath) return events.slice(0, 120)
+    return events.filter(event => event.path === selectedPath)
+  }, [events, selectedPath])
 
   return (
     <div className="app">
       <header className="app-header">
-        <h1>Wide Timeseries Rollup Demo</h1>
+        <h1>Raw Keyspace Prefix Demo</h1>
         <p className="subtitle">
-          A large ordered series rolled up from 1 column to all columns, like a CouchDB-style aggregate surface.
+          A [path,timestamp] key can fan out into several emitted rows; the demo shows the raw keyspace slice, not a fabricated rollup view.
         </p>
       </header>
 
       <div className="app-toolbar">
         <div className="toolbar-group">
-          <label>Series:</label>
-          <select
-            className="select"
-            value={selectedSeries}
-            onChange={e => setSelectedSeries(e.target.value)}
-          >
-            {series.map(name => <option key={name} value={name}>{name}</option>)}
+          <label>Path:</label>
+          <select className="select" value={selectedPath} onChange={e => setSelectedPath(e.target.value)}>
+            {paths.map(path => <option key={path} value={path}>{path}</option>)}
           </select>
         </div>
 
         <div className="toolbar-group">
-          <label>Rollup:</label>
+          <label>Event:</label>
+          <select className="select" value={selectedEvent} onChange={e => setSelectedEvent(e.target.value)}>
+            {selectedPathEvents.map(event => (
+              <option key={event.eventId} value={event.eventId}>
+                {formatTimestampLabel(event.timestamp)} · {event.emittedKeys} keys
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="toolbar-group">
+          <label>Prefix depth:</label>
           <input
             type="range"
             min="1"
-            max={maxColumns}
+            max={MAX_PREFIX_DEPTH}
             step="1"
-            value={visibleColumns}
-            onChange={e => setVisibleColumns(Number(e.target.value))}
+            value={rawPrefixDepth}
+            onChange={e => setPrefixDepth(Number(e.target.value))}
             style={{ width: 220 }}
           />
-          <span style={{ minWidth: 120 }}>{formatVisibleColumnsLabel(visibleColumns, rawBucketCount)}</span>
+          <span style={{ minWidth: 160 }}>{PREFIX_LABELS[rawPrefixDepth - 1] || `level ${rawPrefixDepth}`}</span>
+        </div>
+
+        <div className="toolbar-group">
+          <label>Metric:</label>
+          <select className="select" value={selectedMetric} onChange={e => setSelectedMetric(e.target.value)}>
+            {metrics.map(metric => <option key={metric} value={metric}>{metric}</option>)}
+          </select>
         </div>
 
         <div className="toolbar-group">
           <label>View:</label>
           <select className="select" value={viewMode} onChange={e => setViewMode(e.target.value)}>
-            <option value="table">Rolled Table</option>
-            <option value="matrix">Wide Matrix</option>
+            <option value="rows">Rows in prefix range</option>
+            <option value="events">Events that emitted rows</option>
           </select>
         </div>
 
@@ -105,10 +165,9 @@ function App() {
         </div>
 
         <div className="toolbar-group stats">
-          <span>Series: {series.length.toLocaleString()}</span>
-          <span>Days: {dataset?.config.days ?? 0}</span>
-          <span>Raw buckets: {rawBucketCount}</span>
-          <span>Rollup factor: {visibleColumns > 0 ? `${(rawBucketCount / visibleColumns).toFixed(1)}x` : '—'}</span>
+          <span>Paths: {paths.length.toLocaleString()}</span>
+          <span>Events: {events.length.toLocaleString()}</span>
+          <span>Rows: {rows.length.toLocaleString()}</span>
         </div>
       </div>
 
@@ -116,109 +175,124 @@ function App() {
         <aside className="sidebar">
           <div className="panel">
             <div className="panel-header">
-              <span>Rollup Ladder</span>
-              <span className="level-count">1 → {rawBucketCount} columns</span>
+              <span>Prefix Range</span>
+              <span className="level-count">[path,timestamp] → emitted rows</span>
             </div>
             <div className="panel-body">
               <div className="stat-grid">
-                {ladder.map(step => (
-                  <div className="stat-item" key={step.visibleColumns}>
-                    <div className="stat-label">{formatVisibleColumnsLabel(step.visibleColumns, rawBucketCount)}</div>
-                    <div className="stat-value">{step.rows.toLocaleString()} rows</div>
-                    <div className="stat-label">factor {step.aggregationFactor.toFixed(1)}x</div>
-                  </div>
-                ))}
-              </div>
-              {selectedRollup && (
-                <div style={{ marginTop: 12, fontSize: '11px', color: 'var(--fg-muted)' }}>
-                  Selected rollup: {selectedRollup.visibleColumns} columns / factor {selectedRollup.aggregationFactor.toFixed(1)}x
+                <div className="stat-item">
+                  <div className="stat-label">startkey</div>
+                  <div className="stat-value">{JSON.stringify(rangeInfo.startkey)}</div>
                 </div>
-              )}
+                <div className="stat-item">
+                  <div className="stat-label">endkey</div>
+                  <div className="stat-value">{JSON.stringify(rangeInfo.endkey)}</div>
+                </div>
+                <div className="stat-item">
+                  <div className="stat-label">Matching rows</div>
+                  <div className="stat-value">{prefixRows.length.toLocaleString()}</div>
+                </div>
+                <div className="stat-item">
+                  <div className="stat-label">Matching events</div>
+                  <div className="stat-value">{groupedByEvent.length.toLocaleString()}</div>
+                </div>
+              </div>
+              <div style={{ marginTop: 12, fontSize: '11px', color: 'var(--fg-muted)' }}>
+                One event can emit several keys. The prefix decides how much of the keyspace you see.
+              </div>
             </div>
           </div>
         </aside>
 
         <main className="main-content">
-          {viewMode === 'table' && (
-            <div className="panel">
-              <div className="panel-header">
-                <span>Rolled Table</span>
-                <span className="level-count">{rolledRows.length.toLocaleString()} rows</span>
-              </div>
-              <div className="panel-body">
+          <div className="panel">
+            <div className="panel-header">
+              <span>{viewMode === 'rows' ? 'Raw Prefix Rows' : 'Event Fan-out'}</span>
+              <span className="level-count">
+                {viewMode === 'rows' ? `${firstVisibleRows.length.toLocaleString()} rows` : `${firstVisibleRows.length.toLocaleString()} events`}
+              </span>
+            </div>
+            <div className="panel-body">
+              {viewMode === 'rows' && (
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>Series</th>
-                      <th>Date</th>
-                      <th>Total</th>
-                      <th>Min</th>
-                      <th>Max</th>
-                      <th>Avg</th>
-                      <th>Visible buckets</th>
+                      <th>Key</th>
+                      <th>Value</th>
+                      <th>Metric</th>
+                      <th>Path</th>
+                      <th>Timestamp</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {rolledRows.slice(0, 80).map(row => (
-                      <tr key={`${row.series}-${row.day}`}>
-                        <td>{row.series}</td>
-                        <td>{row.day}</td>
-                        <td>{row.total.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
-                        <td>{row.min.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
-                        <td>{row.max.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
-                        <td>{row.avg.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
-                        <td>{row.visibleColumns}</td>
+                    {firstVisibleRows.map(row => (
+                      <tr key={`${row.eventId}-${row.metric}`}>
+                        <td>{formatKey(row.key)}</td>
+                        <td>{row.value.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                        <td>{row.metric}</td>
+                        <td>{row.path}</td>
+                        <td>{formatTimestampLabel(row.timestamp)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-              </div>
-            </div>
-          )}
+              )}
 
-          {viewMode === 'matrix' && (
-            <div className="panel">
-              <div className="panel-header">
-                <span>Wide Matrix</span>
-                <span className="level-count">raw → rolled</span>
-              </div>
-              <div className="panel-body">
-                <div className="fwf-content" style={{ whiteSpace: 'pre', overflowX: 'auto' }}>
-                  {rolledRows.slice(0, 12).map(row => {
-                    const cells = row.columns.map(col => `${String(col.index).padStart(2, '0')}:${col.total.toFixed(0)}`).join(' | ')
-                    return `${row.series} ${row.day} | ${cells}`
-                  }).join('\n')}
-                </div>
-              </div>
+              {viewMode === 'events' && (
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Path</th>
+                      <th>Timestamp</th>
+                      <th>Emitted keys</th>
+                      <th>Metrics</th>
+                      <th>First</th>
+                      <th>Last</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {firstVisibleRows.map(event => (
+                      <tr key={event.eventId}>
+                        <td>{event.path}</td>
+                        <td>{formatTimestampLabel(event.timestamp)}</td>
+                        <td>{event.emittedKeys}</td>
+                        <td>{event.metrics.join(', ')}</td>
+                        <td>{event.firstValue.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                        <td>{event.lastValue.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
-          )}
+          </div>
 
           <div className="panel fwf-panel">
             <div className="panel-header">
-              <span>Aggregator Metaphor</span>
-              <span className="level-count">1 column → all columns</span>
+              <span>Keyspace Metaphor</span>
+              <span className="level-count">raw keys only</span>
             </div>
             <div className="panel-body">
               <div className="stat-grid">
                 <div className="stat-item">
-                  <div className="stat-label">Raw events per row</div>
-                  <div className="stat-value">{rawBucketCount}</div>
+                  <div className="stat-label">Selected path</div>
+                  <div className="stat-value">{selectedPath || '—'}</div>
                 </div>
                 <div className="stat-item">
-                  <div className="stat-label">Visible columns</div>
-                  <div className="stat-value">{visibleColumns}</div>
+                  <div className="stat-label">Selected event</div>
+                  <div className="stat-value">{selectedEventObject ? formatTimestampLabel(selectedEventObject.timestamp) : '—'}</div>
                 </div>
                 <div className="stat-item">
-                  <div className="stat-label">Aggregation factor</div>
-                  <div className="stat-value">{(rawBucketCount / visibleColumns).toFixed(1)}x</div>
+                  <div className="stat-label">Emitted rows for event</div>
+                  <div className="stat-value">{selectedEventObject?.emittedKeys ?? 0}</div>
                 </div>
                 <div className="stat-item">
-                  <div className="stat-label">Total visible cells</div>
-                  <div className="stat-value">{(rolledRows.length * visibleColumns).toLocaleString()}</div>
+                  <div className="stat-label">Prefix precision</div>
+                  <div className="stat-value">{PREFIX_LABELS[rawPrefixDepth - 1] || `level ${rawPrefixDepth}`}</div>
                 </div>
               </div>
               <div style={{ marginTop: 12, fontSize: '11px', color: 'var(--fg-muted)' }}>
-                The same ordered timeseries can be summarized at any span: 1 column is the widest rollup, all columns are the raw leaf view.
+                The key fan-out is the point: one [path,timestamp] event can yield several emitted rows, and prefix range selection decides how much of that ordered space you inspect.
               </div>
             </div>
           </div>
@@ -227,7 +301,7 @@ function App() {
 
       <footer className="app-footer">
         <p>
-          Wide timeseries rollup demo · ordered buckets · aggregation from coarse summary to leaf-level detail
+          Raw keyspace demo · no map/reduce layer · hierarchical prefix selection over emitted keys
         </p>
       </footer>
     </div>
