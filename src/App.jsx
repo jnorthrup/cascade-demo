@@ -1,129 +1,100 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react'
-import { 
-  generateDayJobLeafData, 
-  generateDayJobCascade, 
-  METRICS,
-  DEPTH_LABELS,
-  toFixedWidth
+import {
+  createWideTimeseries,
+  rollupWideTimeseries,
+  buildRollupLadder,
+  formatVisibleColumnsLabel,
+  TIME_BUCKETS_PER_DAY
 } from './dayjobGenerator'
-import CascadeGrid from './CascadeGrid'
-import DepthSelector from './DepthSelector'
-import MetricSelector from './MetricSelector'
-import KeyInspector from './KeyInspector'
-import GradientCascade from './GradientCascade'
-import StatsPanel from './StatsPanel'
 import './styles.css'
 
 function App() {
-  const [transactions, setTransactions] = useState([])
-  const [cascade, setCascade] = useState([])
-  const [currentDepth, setCurrentDepth] = useState(4)
-  const [selectedMetric, setSelectedMetric] = useState('amount')
-  const [selectedKeyPrefix, setSelectedKeyPrefix] = useState([])
-  const [viewMode, setViewMode] = useState('cascade')
+  const [dataset, setDataset] = useState(null)
+  const [visibleColumns, setVisibleColumns] = useState(1)
+  const [selectedSeries, setSelectedSeries] = useState('')
+  const [viewMode, setViewMode] = useState('table')
   const [isGenerating, setIsGenerating] = useState(false)
-  const [showFixedWidth, setShowFixedWidth] = useState(false)
-  const [generationConfig, setGenerationConfig] = useState({
-    regions: 3,
-    areasPerRegion: 4,
-    days: 14,
-    productsPerDayPerArea: 30
+  const [generationConfig] = useState({
+    seriesCount: 24,
+    days: 30,
+    rawBucketCount: TIME_BUCKETS_PER_DAY,
+    startDate: new Date('2024-01-01')
   })
-
-  // Generate initial data
-  useEffect(() => {
-    regenerateData()
-  }, [])
 
   const regenerateData = useCallback(() => {
     setIsGenerating(true)
     setTimeout(() => {
-      const newTransactions = generateDayJobLeafData(generationConfig)
-      const newCascade = generateDayJobCascade(newTransactions, 7)
-      setTransactions(newTransactions)
-      setCascade(newCascade)
+      const next = createWideTimeseries(generationConfig)
+      setDataset(next)
+      setSelectedSeries(next.series[0] || '')
+      setVisibleColumns(1)
       setIsGenerating(false)
-    }, 50)
+    }, 30)
   }, [generationConfig])
 
-  // Get current level data
-  const currentLevelData = useMemo(() => {
-    if (!cascade.length) return []
-    const level = cascade.find(c => c.depth === currentDepth)
-    return level ? level.data : []
-  }, [cascade, currentDepth])
+  useEffect(() => {
+    regenerateData()
+  }, [regenerateData])
 
-  // Get filtered data for selected key prefix
-  const filteredData = useMemo(() => {
-    if (!selectedKeyPrefix.length) return currentLevelData
-    return currentLevelData.filter(item => 
-      selectedKeyPrefix.every((p, i) => item.key[i] === p)
-    )
-  }, [currentLevelData, selectedKeyPrefix])
+  const rows = dataset?.rows || []
+  const rawBucketCount = dataset?.rawBucketCount || TIME_BUCKETS_PER_DAY
+  const series = dataset?.series || []
 
-  // Compute gradient cascade data (all depths for a key path)
-  const gradientData = useMemo(() => {
-    if (!selectedKeyPrefix.length) return null
-    return cascade.map(level => {
-      const matches = level.data.filter(item => 
-        selectedKeyPrefix.every((p, i) => item.key[i] === p)
-      )
-      return {
-        depth: level.depth,
-        label: level.label,
-        count: matches.length,
-        metrics: matches.reduce((acc, m) => {
-          if (m[selectedMetric] !== undefined) {
-            acc.sum += m[selectedMetric]
-            acc.count += m.trans_count || 1
-            acc.min = Math.min(acc.min, m[selectedMetric])
-            acc.max = Math.max(acc.max, m[selectedMetric])
-          }
-          return acc
-        }, { sum: 0, count: 0, min: Infinity, max: -Infinity })
-      }
-    }).filter(d => d.count > 0)
-  }, [cascade, selectedKeyPrefix, selectedMetric])
+  const selectedRows = useMemo(() => {
+    if (!selectedSeries) return rows.slice(0, 120)
+    return rows.filter(row => row.series === selectedSeries)
+  }, [rows, selectedSeries])
 
-  // Fixed width export
-  const fixedWidthData = useMemo(() => {
-    if (!showFixedWidth) return ''
-    return toFixedWidth(transactions.slice(0, 100))
-  }, [transactions, showFixedWidth])
+  const rolledRows = useMemo(() => {
+    if (!selectedRows.length) return []
+    return rollupWideTimeseries(selectedRows, visibleColumns, rawBucketCount)
+  }, [selectedRows, visibleColumns, rawBucketCount])
+
+  const ladder = useMemo(() => buildRollupLadder(selectedRows, rawBucketCount), [selectedRows, rawBucketCount])
+  const selectedRollup = ladder.find(step => step.visibleColumns === visibleColumns) || ladder[0]
+
+  const maxColumns = rawBucketCount
 
   return (
     <div className="app">
       <header className="app-header">
-        <h1>DayJob Cascade Gridview</h1>
-        <p className="subtitle">Sales Map/Reduce Cascade · Columnar Pattern · Binsearch-Ordered Keys</p>
+        <h1>Wide Timeseries Rollup Demo</h1>
+        <p className="subtitle">
+          A large ordered series rolled up from 1 column to all columns, like a CouchDB-style aggregate surface.
+        </p>
       </header>
 
       <div className="app-toolbar">
         <div className="toolbar-group">
-          <label>Depth: </label>
-          <DepthSelector 
-            value={currentDepth} 
-            onChange={setCurrentDepth}
-            maxDepth={7}
-            labels={DEPTH_LABELS}
-          />
-        </div>
-        
-        <div className="toolbar-group">
-          <label>Metric: </label>
-          <MetricSelector 
-            value={selectedMetric} 
-            onChange={setSelectedMetric}
-            metrics={METRICS}
-          />
+          <label>Series:</label>
+          <select
+            className="select"
+            value={selectedSeries}
+            onChange={e => setSelectedSeries(e.target.value)}
+          >
+            {series.map(name => <option key={name} value={name}>{name}</option>)}
+          </select>
         </div>
 
         <div className="toolbar-group">
-          <label>View: </label>
-          <select value={viewMode} onChange={e => setViewMode(e.target.value)} className="select">
-            <option value="cascade">Cascade Grid</option>
-            <option value="grid">Flat Grid</option>
-            <option value="gradient">Gradient Cascade</option>
+          <label>Rollup:</label>
+          <input
+            type="range"
+            min="1"
+            max={maxColumns}
+            step="1"
+            value={visibleColumns}
+            onChange={e => setVisibleColumns(Number(e.target.value))}
+            style={{ width: 220 }}
+          />
+          <span style={{ minWidth: 120 }}>{formatVisibleColumnsLabel(visibleColumns, rawBucketCount)}</span>
+        </div>
+
+        <div className="toolbar-group">
+          <label>View:</label>
+          <select className="select" value={viewMode} onChange={e => setViewMode(e.target.value)}>
+            <option value="table">Rolled Table</option>
+            <option value="matrix">Wide Matrix</option>
           </select>
         </div>
 
@@ -131,129 +102,134 @@ function App() {
           <button onClick={regenerateData} disabled={isGenerating} className="btn">
             {isGenerating ? 'Generating...' : 'Regenerate'}
           </button>
-          <button onClick={() => setShowFixedWidth(!showFixedWidth)} className="btn secondary">
-            {showFixedWidth ? 'Hide FWF' : 'Show FWF'}
-          </button>
         </div>
 
         <div className="toolbar-group stats">
-          <span>Leaf TX: {transactions.length.toLocaleString()}</span>
-          <span>Depth {currentDepth}: {currentLevelData.length} rollups</span>
-          {selectedKeyPrefix.length && (
-            <span>Prefix: {selectedKeyPrefix.join(' › ')}</span>
-          )}
+          <span>Series: {series.length.toLocaleString()}</span>
+          <span>Days: {dataset?.config.days ?? 0}</span>
+          <span>Raw buckets: {rawBucketCount}</span>
+          <span>Rollup factor: {visibleColumns > 0 ? `${(rawBucketCount / visibleColumns).toFixed(1)}x` : '—'}</span>
         </div>
       </div>
 
       <div className="app-main">
         <aside className="sidebar">
-          <KeyInspector
-            cascade={cascade}
-            currentDepth={currentDepth}
-            selectedPrefix={selectedKeyPrefix}
-            onSelectPrefix={setSelectedKeyPrefix}
-            selectedMetric={selectedMetric}
-          />
-          
-          <StatsPanel
-            readings={transactions}
-            cascade={cascade}
-            currentDepth={currentDepth}
-            selectedMetric={selectedMetric}
-            selectedPrefix={selectedKeyPrefix}
-          />
+          <div className="panel">
+            <div className="panel-header">
+              <span>Rollup Ladder</span>
+              <span className="level-count">1 → {rawBucketCount} columns</span>
+            </div>
+            <div className="panel-body">
+              <div className="stat-grid">
+                {ladder.map(step => (
+                  <div className="stat-item" key={step.visibleColumns}>
+                    <div className="stat-label">{formatVisibleColumnsLabel(step.visibleColumns, rawBucketCount)}</div>
+                    <div className="stat-value">{step.rows.toLocaleString()} rows</div>
+                    <div className="stat-label">factor {step.aggregationFactor.toFixed(1)}x</div>
+                  </div>
+                ))}
+              </div>
+              {selectedRollup && (
+                <div style={{ marginTop: 12, fontSize: '11px', color: 'var(--fg-muted)' }}>
+                  Selected rollup: {selectedRollup.visibleColumns} columns / factor {selectedRollup.aggregationFactor.toFixed(1)}x
+                </div>
+              )}
+            </div>
+          </div>
         </aside>
 
         <main className="main-content">
-          {viewMode === 'cascade' && (
-            <CascadeGrid
-              cascade={cascade}
-              currentDepth={currentDepth}
-              selectedMetric={selectedMetric}
-              selectedPrefix={selectedKeyPrefix}
-              onSelectPrefix={setSelectedKeyPrefix}
-            />
-          )}
-          
-          {viewMode === 'grid' && (
-            <FlatGrid
-              data={filteredData}
-              depth={currentDepth}
-              metric={selectedMetric}
-              onSelectPrefix={setSelectedKeyPrefix}
-            />
-          )}
-          
-          {viewMode === 'gradient' && (
-            <GradientCascade
-              gradientData={gradientData}
-              metric={selectedMetric}
-              prefix={selectedKeyPrefix}
-            />
-          )}
-
-          {showFixedWidth && fixedWidthData && (
-            <div className="panel fwf-panel">
+          {viewMode === 'table' && (
+            <div className="panel">
               <div className="panel-header">
-                <span>Fixed-Width Format (DayJobTest coords)</span>
-                <span className="level-count">{Math.min(transactions.length, 100)} rows</span>
+                <span>Rolled Table</span>
+                <span className="level-count">{rolledRows.length.toLocaleString()} rows</span>
               </div>
               <div className="panel-body">
-                <pre className="fwf-content">{fixedWidthData}</pre>
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Series</th>
+                      <th>Date</th>
+                      <th>Total</th>
+                      <th>Min</th>
+                      <th>Max</th>
+                      <th>Avg</th>
+                      <th>Visible buckets</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rolledRows.slice(0, 80).map(row => (
+                      <tr key={`${row.series}-${row.day}`}>
+                        <td>{row.series}</td>
+                        <td>{row.day}</td>
+                        <td>{row.total.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                        <td>{row.min.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                        <td>{row.max.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                        <td>{row.avg.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                        <td>{row.visibleColumns}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
+
+          {viewMode === 'matrix' && (
+            <div className="panel">
+              <div className="panel-header">
+                <span>Wide Matrix</span>
+                <span className="level-count">raw → rolled</span>
+              </div>
+              <div className="panel-body">
+                <div className="fwf-content" style={{ whiteSpace: 'pre', overflowX: 'auto' }}>
+                  {rolledRows.slice(0, 12).map(row => {
+                    const cells = row.columns.map(col => `${String(col.index).padStart(2, '0')}:${col.total.toFixed(0)}`).join(' | ')
+                    return `${row.series} ${row.day} | ${cells}`
+                  }).join('\n')}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="panel fwf-panel">
+            <div className="panel-header">
+              <span>Aggregator Metaphor</span>
+              <span className="level-count">1 column → all columns</span>
+            </div>
+            <div className="panel-body">
+              <div className="stat-grid">
+                <div className="stat-item">
+                  <div className="stat-label">Raw events per row</div>
+                  <div className="stat-value">{rawBucketCount}</div>
+                </div>
+                <div className="stat-item">
+                  <div className="stat-label">Visible columns</div>
+                  <div className="stat-value">{visibleColumns}</div>
+                </div>
+                <div className="stat-item">
+                  <div className="stat-label">Aggregation factor</div>
+                  <div className="stat-value">{(rawBucketCount / visibleColumns).toFixed(1)}x</div>
+                </div>
+                <div className="stat-item">
+                  <div className="stat-label">Total visible cells</div>
+                  <div className="stat-value">{(rolledRows.length * visibleColumns).toLocaleString()}</div>
+                </div>
+              </div>
+              <div style={{ marginTop: 12, fontSize: '11px', color: 'var(--fg-muted)' }}>
+                The same ordered timeseries can be summarized at any span: 1 column is the widest rollup, all columns are the raw leaf view.
+              </div>
+            </div>
+          </div>
         </main>
       </div>
 
       <footer className="app-footer">
-        <p>{'Map: emit([region, area, year, month, day, category, plu], {qty, amt, count}) · Reduce: sum/count/avg · Rereduce: combine partials'}</p>
-        <p style={{ marginTop: 4, fontSize: '10px', opacity: 0.6 }}>
-          Inspired by columnar/cursors/DayJobTest.kt · Fixed-width: SalesNo(11) AreaID(4) Date(10) PluNo(5) ItemName(20) Qty(11) Amt(11) Mode(5)
+        <p>
+          Wide timeseries rollup demo · ordered buckets · aggregation from coarse summary to leaf-level detail
         </p>
       </footer>
-    </div>
-  )
-}
-
-// Flat grid view for detailed inspection
-function FlatGrid({ data, depth, metric, onSelectPrefix }) {
-  const columns = ['Key', 'Count', 'Qty', 'Amount', 'Avg Price', 'Unique Items', 'Categories']
-  
-  return (
-    <div className="grid-view">
-      <table className="data-table">
-        <thead>
-          <tr>
-            {columns.map(col => <th key={col}>{col}</th>)}
-          </tr>
-        </thead>
-        <tbody>
-          {data.slice(0, 200).map((row, idx) => (
-            <tr 
-              key={idx} 
-              onClick={() => onSelectPrefix(row.key)}
-              className="clickable-row"
-            >
-              <td className="key-cell">
-                <span className="key-path">{row.key.join(' › ')}</span>
-                <span className="depth-badge">depth {depth}</span>
-              </td>
-              <td>{row.trans_count.toLocaleString()}</td>
-              <td>{row.quantity.toLocaleString()}</td>
-              <td>{row.amount.toLocaleString()}</td>
-              <td>{row.avg_price?.toLocaleString(undefined, {maximumFractionDigits: 2}) ?? '—'}</td>
-              <td>{row.unique_items.toLocaleString()}</td>
-              <td>{row.categories?.join(', ') ?? '—'}</td>
-            </tr>
-          ))}
-          {data.length > 200 && (
-            <tr>
-              <td colSpan={7} className="truncated">... and {data.length - 200} more rows (click a row to drill down)</td>
-            </tr>
-          )}
-        </tbody>
-      </table>
     </div>
   )
 }

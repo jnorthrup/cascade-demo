@@ -1,35 +1,28 @@
-// DayJob-inspired synthetic sales data generator
-// Mirrors the columnar DayJobTest pattern:
-// SalesNo, SalesAreaID, date, PluNo, ItemName, Quantity, Amount, TransMode
-// With hierarchical keys enabling map/reduce rollups at any granularity
+// Wide timeseries generator for the aggregator metaphor.
+//
+// The demo shows how a large, wide, ordered timeseries can be rolled up from
+// one summary column to all raw columns by changing the visible column span.
 
-const REGIONS = ['NORTHEAST', 'SOUTHEAST', 'MIDWEST', 'SOUTHWEST', 'NORTHWEST', 'PACIFIC']
-const AREAS_PER_REGION = 8
-const PRODUCTS = Array.from({ length: 200 }, (_, i) => ({
-  plu: String(10000 + i).padStart(5, '0'),
-  name: `ITEM_${String(i + 1).padStart(3, '0')}`,
-  category: ['GROCERY', 'DAIRY', 'MEAT', 'PRODUCE', 'BAKERY', 'FROZEN', 'BEVERAGE', 'SNACKS'][i % 8],
-  basePrice: 0.5 + (i % 50) * 0.15,
-  baseQty: 1 + (i % 20)
-}))
-const TRANS_MODES = ['SALE', 'RETURN', 'VOID', 'ADJUST']
+const SERIES_COLORS = [
+  'SENSOR', 'COUNTER', 'PIPE', 'QUEUE', 'NODE', 'HOST', 'EDGE', 'REGION'
+]
 
-const METRICS = ['quantity', 'amount', 'trans_count', 'avg_price', 'unique_items', 'unique_trans']
+const TIME_BUCKETS_PER_DAY = 48 // 30-minute buckets across a day
+const ROLLUP_OPTIONS = [1, 2, 3, 4, 6, 8, 12, 16, 24, 48]
 
-// Deterministic pseudo-random
-function mulberry32(a) {
+function mulberry32(seed) {
   return function() {
-    let t = a += 0x6D2B79F5
+    let t = seed += 0x6D2B79F5
     t = Math.imul(t ^ t >>> 15, t | 1)
     t ^= t + Math.imul(t ^ t >>> 7, t | 61)
     return ((t ^ t >>> 14) >>> 0) / 4294967296
   }
 }
 
-function keyToSeed(key) {
+function keyToSeed(parts) {
   let hash = 0
-  for (const k of key) {
-    const str = String(k)
+  for (const part of parts) {
+    const str = String(part)
     for (let i = 0; i < str.length; i++) {
       hash = ((hash << 5) - hash) + str.charCodeAt(i)
       hash |= 0
@@ -38,310 +31,168 @@ function keyToSeed(key) {
   return Math.abs(hash) || 1
 }
 
-// Build key: [region, area, year, month, day, product_category, product_plu]
-function buildSalesKey(config, indices) {
-  const { regionIdx, areaIdx, year, month, day, productIdx } = indices
-  const region = REGIONS[regionIdx % REGIONS.length]
-  const area = `${region}_AREA_${String((areaIdx % AREAS_PER_REGION) + 1).padStart(2, '0')}`
-  const product = PRODUCTS[productIdx % PRODUCTS.length]
-  return [region, area, year, month, day, product.category, product.plu]
+function pad2(n) {
+  return String(n).padStart(2, '0')
 }
 
-// Generate a single transaction
-function generateTransaction(key, seed) {
-  const rand = mulberry32(seed)
-  const product = PRODUCTS[parseInt(key[6]) % PRODUCTS.length]
-  
-  const quantity = Math.max(1, Math.round(product.baseQty * (0.5 + rand() * 1.5)))
-  const unitPrice = product.basePrice * (0.8 + rand() * 0.4)
-  const amount = Math.round(quantity * unitPrice * 100) / 100
-  const transMode = TRANS_MODES[Math.floor(rand() * TRANS_MODES.length)]
-  
-  // Returns/voids are negative
-  const signedQty = transMode === 'RETURN' || transMode === 'VOID' ? -quantity : quantity
-  const signedAmt = transMode === 'RETURN' || transMode === 'VOID' ? -amount : amount
-  
-  return {
-    key: [...key],
-    sales_no: `SN${String(Math.floor(rand() * 1e9)).padStart(9, '0')}`,
-    quantity: signedQty,
-    amount: signedAmt,
-    unit_price: Math.round(unitPrice * 100) / 100,
-    trans_mode: transMode,
-    item_name: product.name,
-    category: product.category
-  }
+function formatClock(minutes) {
+  const h = Math.floor(minutes / 60)
+  const m = minutes % 60
+  return `${pad2(h)}:${pad2(m)}`
 }
 
-// Generate all leaf transactions for a date range
-export function generateDayJobLeafData(config = {}) {
+function buildBucketLabels(rawBucketCount = TIME_BUCKETS_PER_DAY) {
+  const minutesPerBucket = 1440 / rawBucketCount
+  return Array.from({ length: rawBucketCount }, (_, i) => {
+    const start = Math.round(i * minutesPerBucket)
+    const end = Math.round((i + 1) * minutesPerBucket)
+    return `${formatClock(start)}-${formatClock(end % 1440)}`
+  })
+}
+
+function buildSeriesNames(seriesCount) {
+  return Array.from({ length: seriesCount }, (_, i) => {
+    const prefix = SERIES_COLORS[i % SERIES_COLORS.length]
+    return `${prefix}_${String(i + 1).padStart(3, '0')}`
+  })
+}
+
+function summarize(values) {
+  const total = values.reduce((sum, value) => sum + value, 0)
+  const min = values.length ? Math.min(...values) : 0
+  const max = values.length ? Math.max(...values) : 0
+  const avg = values.length ? total / values.length : 0
+  return { total, min, max, avg }
+}
+
+export function createWideTimeseries(config = {}) {
   const {
-    regions = 3,
-    areasPerRegion = 4,
-    days = 30,
-    productsPerDayPerArea = 50,
-    startDate = new Date('2024-01-01')
+    seriesCount = 18,
+    days = 21,
+    startDate = new Date('2024-01-01'),
+    rawBucketCount = TIME_BUCKETS_PER_DAY
   } = config
-  
-  const transactions = []
-  let salesNo = 1
-  
-  for (let regionIdx = 0; regionIdx < regions; regionIdx++) {
-    for (let areaIdx = 0; areaIdx < areasPerRegion; areaIdx++) {
-      for (let dayOffset = 0; dayOffset < days; dayOffset++) {
-        const currentDate = new Date(startDate)
-        currentDate.setDate(currentDate.getDate() + dayOffset)
-        const year = currentDate.getFullYear()
-        const month = currentDate.getMonth() + 1
-        const day = currentDate.getDate()
-        
-        // Generate transactions for this day/area
-        for (let p = 0; p < productsPerDayPerArea; p++) {
-          const productIdx = (regionIdx * areasPerRegion * days * productsPerDayPerArea) + 
-                            (areaIdx * days * productsPerDayPerArea) + 
-                            (dayOffset * productsPerDayPerArea) + p
-          
-          const key = buildSalesKey(config, { regionIdx, areaIdx, year, month, day, productIdx })
-          const seed = keyToSeed(key)
-          
-          // Multiple transactions per product per day (1-5)
-          const txCount = 1 + Math.floor(mulberry32(seed + 1)() * 4)
-          for (let t = 0; t < txCount; t++) {
-            const txSeed = keyToSeed([...key, t])
-            transactions.push(generateTransaction(key, txSeed))
-            salesNo++
-          }
-        }
+
+  const series = buildSeriesNames(seriesCount)
+  const bucketLabels = buildBucketLabels(rawBucketCount)
+  const rows = []
+
+  for (let seriesIdx = 0; seriesIdx < series.length; seriesIdx++) {
+    const seriesName = series[seriesIdx]
+
+    for (let dayOffset = 0; dayOffset < days; dayOffset++) {
+      const day = new Date(startDate)
+      day.setDate(day.getDate() + dayOffset)
+      const dayLabel = day.toISOString().slice(0, 10)
+      const daySeed = keyToSeed([seriesName, dayLabel])
+      const dayRand = mulberry32(daySeed)
+      const weekend = day.getDay() === 0 || day.getDay() === 6 ? -8 : 0
+      const drift = dayOffset * 0.85
+      const values = []
+
+      for (let bucketIdx = 0; bucketIdx < rawBucketCount; bucketIdx++) {
+        const bucketPhase = (bucketIdx / rawBucketCount) * Math.PI * 2
+        const seasonal = Math.sin(bucketPhase + seriesIdx * 0.35 + dayOffset * 0.12) * 18
+        const shoulder = Math.cos(bucketPhase * 2 + seriesIdx * 0.18) * 6
+        const noise = (dayRand() - 0.5) * 7
+        const baseline = 60 + seriesIdx * 4.5 + drift + weekend
+        const value = Math.max(0, Math.round((baseline + seasonal + shoulder + noise) * 10) / 10)
+        values.push(value)
       }
-    }
-  }
-  
-  return transactions
-}
 
-// Map function: emit(key, value) - key is hierarchical array
-export function mapTransactions(transactions, keyDepth) {
-  return transactions.map(tx => ({
-    key: tx.key.slice(0, keyDepth),
-    value: {
-      quantity: tx.quantity,
-      amount: tx.amount,
-      trans_count: 1,
-      unique_items: 1,
-      unique_trans: new Set([tx.sales_no]),
-      categories: new Set([tx.category]),
-      trans_modes: new Set([tx.trans_mode])
-    }
-  }))
-}
-
-// Reduce function: combine values for same key
-export function reduceMapped(mapped, rereduce = false) {
-  const groups = new Map()
-  
-  for (const { key, value } of mapped) {
-    const keyStr = key.join('|')
-    if (!groups.has(keyStr)) {
-      groups.set(keyStr, {
-        key: [...key],
-        quantity: 0,
-        amount: 0,
-        trans_count: 0,
-        unique_items: new Set(),
-        unique_trans: new Set(),
-        categories: new Set(),
-        trans_modes: new Set()
+      const stats = summarize(values)
+      rows.push({
+        key: [seriesName, dayLabel],
+        series: seriesName,
+        day: dayLabel,
+        rawBucketCount,
+        bucketLabels,
+        values,
+        ...stats,
+        depth: 2
       })
     }
-    const group = groups.get(keyStr)
-    group.quantity += value.quantity
-    group.amount += value.amount
-    group.trans_count += value.trans_count
-    if (value.unique_items && typeof value.unique_items.forEach === 'function') value.unique_items.forEach(v => group.unique_items.add(v))
-    if (value.unique_trans) value.unique_trans.forEach(v => group.unique_trans.add(v))
-    if (value.categories) value.categories.forEach(v => group.categories.add(v))
-    if (value.trans_modes) value.trans_modes.forEach(v => group.trans_modes.add(v))
   }
-  
-  // Finalize aggregates
-  const results = []
-  for (const [, group] of groups) {
-    const avgPrice = group.trans_count > 0 ? group.amount / group.trans_count : 0
-    const quantity = Math.round(group.quantity * 100) / 100
-    const amount = Math.round(group.amount * 100) / 100
-    const transCount = group.trans_count
-    const avgPriceRounded = Math.round(avgPrice * 100) / 100
-    const uniqueItems = group.unique_items.size
-    const uniqueTrans = group.unique_trans.size
 
-    results.push({
-      key: group.key,
-      quantity,
-      amount,
-      trans_count: transCount,
-      count: transCount,  // Alias for components expecting .count
-      avg_price: avgPriceRounded,
-      unique_items: uniqueItems,
-      unique_trans: uniqueTrans,
-      metrics: {
-        quantity: { sum: quantity, avg: quantity, min: quantity, max: quantity },
-        amount: { sum: amount, avg: amount, min: amount, max: amount },
-        trans_count: { sum: transCount, avg: transCount, min: transCount, max: transCount },
-        avg_price: { sum: avgPriceRounded, avg: avgPriceRounded, min: avgPriceRounded, max: avgPriceRounded },
-        unique_items: { sum: uniqueItems, avg: uniqueItems, min: uniqueItems, max: uniqueItems },
-        unique_trans: { sum: uniqueTrans, avg: uniqueTrans, min: uniqueTrans, max: uniqueTrans }
-      },
-      categories: Array.from(group.categories),
-      trans_modes: Array.from(group.trans_modes),
-      depth: group.key.length
-    })
+  return {
+    config: { seriesCount, days, rawBucketCount, startDate: new Date(startDate).toISOString() },
+    series,
+    bucketLabels,
+    rawBucketCount,
+    rows
   }
-  
-  // Sort by key (binsearch order)
-  results.sort((a, b) => {
-    for (let i = 0; i < Math.max(a.key.length, b.key.length); i++) {
-      const av = a.key[i] ?? ''
-      const bv = b.key[i] ?? ''
-      if (av < bv) return -1
-      if (av > bv) return 1
+}
+
+function normalizeVisibleColumns(visibleColumns, rawBucketCount) {
+  const candidate = Math.max(1, Math.min(rawBucketCount, Math.round(visibleColumns)))
+  const exactOptions = ROLLUP_OPTIONS.filter(option => rawBucketCount % option === 0)
+  if (exactOptions.includes(candidate)) return candidate
+  return exactOptions.reduce((closest, option) => {
+    if (option >= candidate && (closest == null || option < closest)) return option
+    return closest
+  }, null) ?? exactOptions[exactOptions.length - 1] ?? rawBucketCount
+}
+
+export function rollupWideTimeseries(rows, visibleColumns, rawBucketCount = TIME_BUCKETS_PER_DAY) {
+  const normalized = normalizeVisibleColumns(visibleColumns, rawBucketCount)
+  const spanSize = rawBucketCount / normalized
+
+  return rows.map(row => {
+    const columns = Array.from({ length: normalized }, (_, columnIdx) => {
+      const start = Math.round(columnIdx * spanSize)
+      const end = Math.round((columnIdx + 1) * spanSize)
+      const slice = row.values.slice(start, end)
+      const total = slice.reduce((sum, value) => sum + value, 0)
+      const min = slice.length ? Math.min(...slice) : 0
+      const max = slice.length ? Math.max(...slice) : 0
+      const avg = slice.length ? total / slice.length : 0
+      const startLabel = row.bucketLabels[start] || row.bucketLabels[0]
+      const endLabel = row.bucketLabels[Math.max(start, end - 1)] || row.bucketLabels[row.bucketLabels.length - 1]
+
+      return {
+        index: columnIdx,
+        label: normalized === 1 ? 'all buckets' : `${startLabel} → ${endLabel}`,
+        start,
+        end,
+        total,
+        min,
+        max,
+        avg,
+        bucketCount: slice.length
+      }
+    })
+
+    const summary = summarize(row.values)
+    return {
+      ...row,
+      visibleColumns: normalized,
+      aggregationFactor: rawBucketCount / normalized,
+      columns,
+      total: summary.total,
+      min: summary.min,
+      max: summary.max,
+      avg: summary.avg
     }
-    return 0
   })
-  
-  return results
 }
 
-// Rereduce: combine already-reduced results
-export function rereduceMapped(reducedResults) {
-  // Same logic as reduceMapped but input is already aggregated
-  const groups = new Map()
-  
-  for (const row of reducedResults) {
-    const keyStr = row.key.join('|')
-    if (!groups.has(keyStr)) {
-      groups.set(keyStr, {
-        key: [...row.key],
-        quantity: 0,
-        amount: 0,
-        trans_count: 0,
-        unique_items: new Set(),
-        unique_trans: new Set(),
-        categories: new Set(),
-        trans_modes: new Set()
-      })
-    }
-    const group = groups.get(keyStr)
-    group.quantity += row.quantity
-    group.amount += row.amount
-    group.trans_count += row.trans_count
-    group.unique_items.add(row.unique_items) // This is a count, not a set in rereduce
-    group.unique_trans.add(row.unique_trans)
-    if (row.categories) row.categories.forEach(v => group.categories.add(v))
-    if (row.trans_modes) row.trans_modes.forEach(v => group.trans_modes.add(v))
-  }
-  
-  const results = []
-  for (const [, group] of groups) {
-    const avgPrice = group.trans_count > 0 ? group.amount / group.trans_count : 0
-    results.push({
-      key: group.key,
-      quantity: Math.round(group.quantity * 100) / 100,
-      amount: Math.round(group.amount * 100) / 100,
-      trans_count: group.trans_count,
-      avg_price: Math.round(avgPrice * 100) / 100,
-      unique_items: group.unique_items.size, // approximate
-      unique_trans: group.unique_trans.size,
-      categories: Array.from(group.categories),
-      trans_modes: Array.from(group.trans_modes),
-      depth: group.key.length
-    })
-  }
-  
-  results.sort((a, b) => {
-    for (let i = 0; i < Math.max(a.key.length, b.key.length); i++) {
-      const av = a.key[i] ?? ''
-      const bv = b.key[i] ?? ''
-      if (av < bv) return -1
-      if (av > bv) return 1
-    }
-    return 0
-  })
-  
-  return results
+export function buildRollupLadder(rows, rawBucketCount = TIME_BUCKETS_PER_DAY) {
+  const grandTotal = rows.reduce((sum, row) => sum + row.total, 0)
+  return ROLLUP_OPTIONS
+    .filter(option => rawBucketCount % option === 0)
+    .map(visibleColumns => ({
+      visibleColumns,
+      aggregationFactor: rawBucketCount / visibleColumns,
+      rows: rows.length,
+      cells: rows.length * visibleColumns,
+      total: grandTotal
+    }))
 }
 
-// Generate full cascade: rollups at each depth level
-export function generateDayJobCascade(transactions, maxDepth = 7) {
-  const cascade = []
-  
-  for (let depth = 1; depth <= maxDepth; depth++) {
-    const mapped = mapTransactions(transactions, depth)
-    const reduced = reduceMapped(mapped)
-    cascade.push({
-      depth,
-      label: DEPTH_LABELS[depth - 1] || `level_${depth}`,
-      data: reduced
-    })
-  }
-  
-  return cascade
+export function formatVisibleColumnsLabel(visibleColumns, rawBucketCount = TIME_BUCKETS_PER_DAY) {
+  if (visibleColumns === 1) return '1 column'
+  if (visibleColumns === rawBucketCount) return 'all columns'
+  return `${visibleColumns} columns`
 }
 
-const DEPTH_LABELS = [
-  'region',           // 0: NORTHEAST, SOUTHEAST, etc.
-  'area',             // 1: NORTHEAST_AREA_01, etc.
-  'year',             // 2: 2024
-  'month',            // 3: 1-12
-  'day',              // 4: 1-31
-  'category',         // 5: GROCERY, DAIRY, etc.
-  'product'           // 6: PLU code
-]
-
-// Binsearch: find insertion point for key prefix
-export function binsearchPrefix(data, prefix) {
-  let lo = 0, hi = data.length
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    const midKey = data[mid].key.slice(0, prefix.length).join('|')
-    const target = prefix.join('|')
-    if (midKey < target) lo = mid + 1
-    else hi = mid
-  }
-  return lo
-}
-
-// Get slice of data for a key prefix at target depth
-export function getSliceAtDepth(data, prefix, targetDepth) {
-  const start = binsearchPrefix(data, prefix)
-  const results = []
-  for (let i = start; i < data.length; i++) {
-    const item = data[i]
-    const match = prefix.every((p, idx) => item.key[idx] === p)
-    if (!match) break
-    if (item.key.length >= targetDepth) {
-      results.push(item.key.slice(0, targetDepth).join('|'))
-    }
-  }
-  return [...new Set(results)]
-}
-
-// Export columnar-style fixed-width format (for demo)
-export function toFixedWidth(transactions) {
-  // Fixed width format matching DayJobTest coords:
-  // SalesNo(11), SalesAreaID(4), date(10), PluNo(5), ItemName(20), Quantity(11), Amount(11), TransMode(5)
-  return transactions.map(tx => {
-    const areaId = tx.key[1].split('_').pop() || '00'
-    return (
-      tx.sales_no.padEnd(11) +
-      areaId.padStart(4, '0') +
-      `${tx.key[2]}-${String(tx.key[3]).padStart(2,'0')}-${String(tx.key[4]).padStart(2,'0')}` +
-      tx.key[6].padStart(5, '0') +
-      tx.item_name.padEnd(20) +
-      String(tx.quantity).padStart(11) +
-      String(tx.amount).padStart(11) +
-      tx.trans_mode.padEnd(5)
-    )
-  }).join('\n')
-}
-
-export { METRICS, DEPTH_LABELS, REGIONS, PRODUCTS, TRANS_MODES }
+export { ROLLUP_OPTIONS, TIME_BUCKETS_PER_DAY }
