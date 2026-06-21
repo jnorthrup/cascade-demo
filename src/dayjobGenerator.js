@@ -167,15 +167,30 @@ export function reduceMapped(mapped, rereduce = false) {
   const results = []
   for (const [, group] of groups) {
     const avgPrice = group.trans_count > 0 ? group.amount / group.trans_count : 0
+    const quantity = Math.round(group.quantity * 100) / 100
+    const amount = Math.round(group.amount * 100) / 100
+    const transCount = group.trans_count
+    const avgPriceRounded = Math.round(avgPrice * 100) / 100
+    const uniqueItems = group.unique_items.size
+    const uniqueTrans = group.unique_trans.size
+
     results.push({
       key: group.key,
-      quantity: Math.round(group.quantity * 100) / 100,
-      amount: Math.round(group.amount * 100) / 100,
-      trans_count: group.trans_count,
-      count: group.trans_count,  // Alias for components expecting .count
-      avg_price: Math.round(avgPrice * 100) / 100,
-      unique_items: group.unique_items.size,
-      unique_trans: group.unique_trans.size,
+      quantity,
+      amount,
+      trans_count: transCount,
+      count: transCount,  // Alias for components expecting .count
+      avg_price: avgPriceRounded,
+      unique_items: uniqueItems,
+      unique_trans: uniqueTrans,
+      metrics: {
+        quantity: { sum: quantity, avg: quantity, min: quantity, max: quantity },
+        amount: { sum: amount, avg: amount, min: amount, max: amount },
+        trans_count: { sum: transCount, avg: transCount, min: transCount, max: transCount },
+        avg_price: { sum: avgPriceRounded, avg: avgPriceRounded, min: avgPriceRounded, max: avgPriceRounded },
+        unique_items: { sum: uniqueItems, avg: uniqueItems, min: uniqueItems, max: uniqueItems },
+        unique_trans: { sum: uniqueTrans, avg: uniqueTrans, min: uniqueTrans, max: uniqueTrans }
+      },
       categories: Array.from(group.categories),
       trans_modes: Array.from(group.trans_modes),
       depth: group.key.length
