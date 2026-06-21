@@ -157,7 +157,7 @@ export function reduceMapped(mapped, rereduce = false) {
     group.quantity += value.quantity
     group.amount += value.amount
     group.trans_count += value.trans_count
-    if (value.unique_items) value.unique_items.forEach(v => group.unique_items.add(v))
+    if (value.unique_items && typeof value.unique_items.forEach === 'function') value.unique_items.forEach(v => group.unique_items.add(v))
     if (value.unique_trans) value.unique_trans.forEach(v => group.unique_trans.add(v))
     if (value.categories) value.categories.forEach(v => group.categories.add(v))
     if (value.trans_modes) value.trans_modes.forEach(v => group.trans_modes.add(v))
