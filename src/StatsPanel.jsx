@@ -14,11 +14,11 @@ function StatsPanel({ readings, cascade, currentDepth, selectedMetric, selectedP
     let globalMax = -Infinity
     
     for (const agg of aggregates) {
-      if (agg[selectedMetric]) {
-        totalSum += agg[selectedMetric].sum
+      if (agg.metrics?.[selectedMetric]) {
+        totalSum += agg.metrics[selectedMetric].sum
         totalCount += agg.count
-        globalMin = Math.min(globalMin, agg[selectedMetric].min)
-        globalMax = Math.max(globalMax, agg[selectedMetric].max)
+        globalMin = Math.min(globalMin, agg.metrics[selectedMetric].min)
+        globalMax = Math.max(globalMax, agg.metrics[selectedMetric].max)
       }
     }
     
@@ -37,11 +37,11 @@ function StatsPanel({ readings, cascade, currentDepth, selectedMetric, selectedP
       )
       let pSum = 0, pCount = 0, pMin = Infinity, pMax = -Infinity
       for (const agg of prefixAggs) {
-        if (agg[selectedMetric]) {
-          pSum += agg[selectedMetric].sum
+        if (agg.metrics?.[selectedMetric]) {
+          pSum += agg.metrics[selectedMetric].sum
           pCount += agg.count
-          pMin = Math.min(pMin, agg[selectedMetric].min)
-          pMax = Math.max(pMax, agg[selectedMetric].max)
+          pMin = Math.min(pMin, agg.metrics[selectedMetric].min)
+          pMax = Math.max(pMax, agg.metrics[selectedMetric].max)
         }
       }
       if (pCount > 0) {

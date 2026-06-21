@@ -46,23 +46,23 @@ function CascadeGrid({ cascade, currentDepth, selectedMetric, selectedPrefix, on
                   ))}
                 </div>
                 <div className="row-metrics">
-                  {selectedMetric && row[selectedMetric] && (
+                  {selectedMetric && row.metrics?.[selectedMetric] && (
                     <>
                       <div className="metric-value">
                         <span className="metric-label">sum</span>
-                        <span className="metric-number">{row[selectedMetric].sum.toLocaleString()}</span>
+                        <span className="metric-number">{row.metrics[selectedMetric].sum.toLocaleString()}</span>
                       </div>
                       <div className="metric-value">
                         <span className="metric-label">avg</span>
-                        <span className="metric-number">{row[selectedMetric].avg.toLocaleString()}</span>
+                        <span className="metric-number">{row.metrics[selectedMetric].avg.toLocaleString()}</span>
                       </div>
                       <div className="metric-value">
                         <span className="metric-label">min</span>
-                        <span className="metric-number">{row[selectedMetric].min.toLocaleString()}</span>
+                        <span className="metric-number">{row.metrics[selectedMetric].min.toLocaleString()}</span>
                       </div>
                       <div className="metric-value">
                         <span className="metric-label">max</span>
-                        <span className="metric-number">{row[selectedMetric].max.toLocaleString()}</span>
+                        <span className="metric-number">{row.metrics[selectedMetric].max.toLocaleString()}</span>
                       </div>
                     </>
                   )}

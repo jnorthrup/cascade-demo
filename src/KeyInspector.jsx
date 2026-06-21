@@ -27,15 +27,15 @@ function KeyInspector({ cascade, currentDepth, selectedPrefix, onSelectPrefix, s
         node.count += row.count
         
         // Aggregate metrics
-        if (row[selectedMetric]) {
+        if (row.metrics?.[selectedMetric]) {
           if (!node.metrics[selectedMetric]) {
             node.metrics[selectedMetric] = { sum: 0, min: Infinity, max: -Infinity, count: 0 }
           }
           const m = node.metrics[selectedMetric]
-          m.sum += row[selectedMetric].sum
+          m.sum += row.metrics[selectedMetric].sum
           m.count += row.count
-          m.min = Math.min(m.min, row[selectedMetric].min)
-          m.max = Math.max(m.max, row[selectedMetric].max)
+          m.min = Math.min(m.min, row.metrics[selectedMetric].min)
+          m.max = Math.max(m.max, row.metrics[selectedMetric].max)
         }
         
         for (let i = 0; i < row.key.length; i++) {
@@ -53,15 +53,15 @@ function KeyInspector({ cascade, currentDepth, selectedPrefix, onSelectPrefix, s
           node = node.children.get(segment)
           node.count += row.count
           
-          if (row[selectedMetric]) {
+          if (row.metrics?.[selectedMetric]) {
             if (!node.metrics[selectedMetric]) {
               node.metrics[selectedMetric] = { sum: 0, min: Infinity, max: -Infinity, count: 0 }
             }
             const m = node.metrics[selectedMetric]
-            m.sum += row[selectedMetric].sum
+            m.sum += row.metrics[selectedMetric].sum
             m.count += row.count
-            m.min = Math.min(m.min, row[selectedMetric].min)
-            m.max = Math.max(m.max, row[selectedMetric].max)
+            m.min = Math.min(m.min, row.metrics[selectedMetric].min)
+            m.max = Math.max(m.max, row.metrics[selectedMetric].max)
           }
         }
       }
