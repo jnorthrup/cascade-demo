@@ -172,6 +172,7 @@ export function reduceMapped(mapped, rereduce = false) {
       quantity: Math.round(group.quantity * 100) / 100,
       amount: Math.round(group.amount * 100) / 100,
       trans_count: group.trans_count,
+      count: group.trans_count,  // Alias for components expecting .count
       avg_price: Math.round(avgPrice * 100) / 100,
       unique_items: group.unique_items.size,
       unique_trans: group.unique_trans.size,
