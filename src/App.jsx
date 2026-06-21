@@ -2,12 +2,8 @@ import React, { useState, useMemo, useEffect, useCallback } from 'react'
 import { 
   generateDayJobLeafData, 
   generateDayJobCascade, 
-  reduceMapped,
-  mapTransactions,
   METRICS,
   DEPTH_LABELS,
-  binsearchPrefix,
-  getSliceAtDepth,
   toFixedWidth
 } from './dayjobGenerator'
 import CascadeGrid from './CascadeGrid'
@@ -211,7 +207,7 @@ function App() {
       </div>
 
       <footer className="app-footer">
-        <p>Map: emit([region, area, year, month, day, category, plu], {qty, amt, count}) · Reduce: sum/count/avg · Rereduce: combine partials</p>
+        <p>{'Map: emit([region, area, year, month, day, category, plu], {qty, amt, count}) · Reduce: sum/count/avg · Rereduce: combine partials'}</p>
         <p style={{ marginTop: 4, fontSize: '10px', opacity: 0.6 }}>
           Inspired by columnar/cursors/DayJobTest.kt · Fixed-width: SalesNo(11) AreaID(4) Date(10) PluNo(5) ItemName(20) Qty(11) Amt(11) Mode(5)
         </p>

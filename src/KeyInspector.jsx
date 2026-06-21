@@ -113,11 +113,6 @@ function KeyInspector({ cascade, currentDepth, selectedPrefix, onSelectPrefix, s
     const hasChildren = node.children.length > 0
     const expanded = isExpanded(node.key) || ancestor // Auto-expand ancestors of selection
     
-    // Auto-expand ancestors
-    if (ancestor && !expandedNodes.has(keyStr)) {
-      setExpandedNodes(prev => new Set(prev).add(keyStr))
-    }
-    
     const metric = node.metrics[selectedMetric]
     const avg = metric ? Math.round((metric.sum / metric.count) * 100) / 100 : null
     
