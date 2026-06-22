@@ -251,6 +251,60 @@ function buildViewRows(docs, viewDef) {
   })).sort((a, b) => compareKeys(a.key, b.key))
 }
 
+function buildCascadeLevels(rows, keyLabels) {
+  const sortedRows = [...rows].sort((a, b) => compareKeys(a.key, b.key))
+  const cascade = []
+
+  for (let depth = 1; depth <= keyLabels.length; depth++) {
+    const data = []
+    let currentPrefix = null
+    let currentRows = []
+
+    const flush = () => {
+      if (!currentRows.length) return
+
+      const docs = currentRows.map(row => row.doc)
+      const aggregate = aggregateDocs(docs)
+      const prefix = [...currentPrefix]
+
+      data.push({
+        depth,
+        key: prefix,
+        keyLabel: prefix
+          .map((segment, idx) => `${keyLabels[idx]}=${segment}`)
+          .join(' › '),
+        count: aggregate.count,
+        docIds: currentRows.map(row => row.docId),
+        docs,
+        metrics: aggregate.stats,
+        leaf: depth === keyLabels.length
+      })
+    }
+
+    for (const row of sortedRows) {
+      const prefix = row.key.slice(0, depth)
+      if (!currentPrefix || compareKeys(prefix, currentPrefix) !== 0) {
+        flush()
+        currentPrefix = prefix
+        currentRows = [row]
+      } else {
+        currentRows.push(row)
+      }
+    }
+
+    flush()
+
+    cascade.push({
+      depth,
+      label: depth === keyLabels.length ? 'leaf keys' : `${depth}-part rollups`,
+      keyLabels: keyLabels.slice(0, depth),
+      data
+    })
+  }
+
+  return cascade
+}
+
 function aggregateDocs(docs) {
   const count = docs.length
   const stats = {}
@@ -352,5 +406,6 @@ export {
   REDUCE_FIELDS,
   DEFAULT_VIEW,
   MAX_PREFIX_DEPTH,
-  aggregateDocs
+  aggregateDocs,
+  buildCascadeLevels
 }

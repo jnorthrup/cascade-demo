@@ -10,7 +10,8 @@ import {
   VIEW_DEFS,
   REDUCE_FIELDS,
   DEFAULT_VIEW,
-  aggregateDocs
+  aggregateDocs,
+  buildCascadeLevels
 } from './dayjobGenerator'
 import './styles.css'
 
@@ -54,6 +55,8 @@ function App() {
   const rawPrefixDepth = Math.max(1, Math.min(prefixDepth, maxPrefixDepth))
 
   const rows = dataset?.views?.[selectedView] || []
+  const cascade = useMemo(() => buildCascadeLevels(rows, currentViewDef.keyLabels), [rows, currentViewDef.keyLabels])
+  const currentLevel = cascade[Math.max(0, rawPrefixDepth - 1)] || cascade[cascade.length - 1]
 
   useEffect(() => {
     if (!rows.length) {
@@ -258,27 +261,48 @@ function App() {
 
           <div className="panel fwf-panel">
             <div className="panel-header">
-              <span>Reduce Output</span>
-              <span className="level-count">{selectedView}/reduce</span>
+              <span>Rollup Cascade</span>
+              <span className="level-count">leaf keys + aggregates</span>
             </div>
             <div className="panel-body">
-              <div className="stat-grid">
-                <div className="stat-item">
-                  <div className="stat-label">count</div>
-                  <div className="stat-value">{reduceOutput.count.toLocaleString()}</div>
-                </div>
-                <div className="stat-item">
-                  <div className="stat-label">first row key</div>
-                  <div className="stat-value">{prefixRows[0] ? JSON.stringify(prefixRows[0].key) : '—'}</div>
-                </div>
-                <div className="stat-item">
-                  <div className="stat-label">last row key</div>
-                  <div className="stat-value">{prefixRows[prefixRows.length - 1] ? JSON.stringify(prefixRows[prefixRows.length - 1].key) : '—'}</div>
-                </div>
-                <div className="stat-item">
-                  <div className="stat-label">reduce fields</div>
-                  <div className="stat-value">{REDUCE_FIELDS.length}</div>
-                </div>
+              <div style={{ display: 'grid', gap: 16 }}>
+                {cascade.map(level => (
+                  <div key={level.depth} className="panel" style={{ margin: 0 }}>
+                    <div className="panel-header">
+                      <span>{level.label}</span>
+                      <span className="level-count">depth {level.depth}</span>
+                    </div>
+                    <div className="panel-body">
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Prefix key</th>
+                            <th>Count</th>
+                            <th>Sum</th>
+                            <th>Avg</th>
+                            <th>Min</th>
+                            <th>Max</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {level.data.slice(0, 20).map(row => {
+                            const metric = row.metrics?.cpu_mhz || row.metrics?.interval || null
+                            return (
+                              <tr key={row.key.join('|')}>
+                                <td>{row.keyLabel || formatKey(row.key)}</td>
+                                <td>{row.count.toLocaleString()}</td>
+                                <td>{metric ? metric.sum.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '—'}</td>
+                                <td>{metric ? metric.avg.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '—'}</td>
+                                <td>{metric ? metric.min.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '—'}</td>
+                                <td>{metric ? metric.max.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '—'}</td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))}
               </div>
 
               <div style={{ marginTop: 16 }}>
