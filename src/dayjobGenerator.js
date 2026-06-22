@@ -1,11 +1,85 @@
-// Raw keyspace generator for the path/timestamp demo.
-// No map/reduce: this models ordered keys directly.
+// CouchDB view-row generator for the readings demo.
+// Emits real JSON array keys and reducer-style stats over the generated docs.
 
-const PATH_ROOTS = ['svc', 'edge', 'core', 'batch', 'stream', 'api', 'web', 'ops']
-const PATH_LEAVES = ['auth', 'billing', 'catalog', 'checkout', 'events', 'search', 'metrics', 'alerts']
-const METRICS = ['requests', 'errors', 'latency_ms', 'bytes_in', 'bytes_out', 'queue_depth']
-const PREFIX_LABELS = ['path', 'year', 'month', 'day', 'hour', 'minute', 'metric']
-const MAX_PREFIX_DEPTH = PREFIX_LABELS.length
+const VIEW_DEFS = {
+  byOrganization: {
+    name: 'byOrganization',
+    label: 'byOrganization',
+    keyLabels: ['organization_id', 'machine_id', 'year', 'month', 'day', 'hour', 'minute'],
+    buildKey(doc) {
+      return [
+        doc.organization_id,
+        doc.machine_id,
+        ...splitReadingDate(doc.reading_date)
+      ]
+    }
+  },
+  byMachine: {
+    name: 'byMachine',
+    label: 'byMachine',
+    keyLabels: ['machine_id', 'year', 'month', 'day', 'hour', 'minute'],
+    buildKey(doc) {
+      return [
+        doc.machine_id,
+        ...splitReadingDate(doc.reading_date)
+      ]
+    }
+  },
+  byInfrastructure: {
+    name: 'byInfrastructure',
+    label: 'byInfrastructure',
+    keyLabels: ['infrastructure_id', 'machine_id', 'year', 'month', 'day', 'hour', 'minute'],
+    buildKey(doc) {
+      return [
+        doc.infrastructure_id,
+        doc.machine_id,
+        ...splitReadingDate(doc.reading_date)
+      ]
+    }
+  },
+  byBillingGroup: {
+    name: 'byBillingGroup',
+    label: 'byBillingGroup',
+    keyLabels: ['billing_group_id', 'machine_id', 'year', 'month', 'day', 'hour', 'minute'],
+    buildKey(doc) {
+      return [
+        doc.billing_group_id,
+        doc.machine_id,
+        ...splitReadingDate(doc.reading_date)
+      ]
+    }
+  },
+  byContract: {
+    name: 'byContract',
+    label: 'byContract',
+    keyLabels: ['contract_id', 'machine_id', 'year', 'month', 'day', 'hour', 'minute'],
+    buildKey(doc) {
+      return [
+        doc.contract_id,
+        doc.machine_id,
+        ...splitReadingDate(doc.reading_date)
+      ]
+    }
+  }
+}
+
+const REDUCE_FIELDS = [
+  'interval',
+  'reading_date',
+  'cpu_mhz',
+  'memory_mib',
+  'storage_gib',
+  'disk_io_kilobytes_per_sec',
+  'lan_io_kilobits_per_sec',
+  'wan_io_kilobits_per_sec',
+  'consumption_wac',
+  'created_at'
+]
+
+const NUMERIC_FIELDS = REDUCE_FIELDS
+const DEFAULT_VIEW = 'byOrganization'
+const DEFAULT_START_DATE = new Date('2024-01-01T00:00:00Z')
+const MAX_PREFIX_DEPTH = Math.max(...Object.values(VIEW_DEFS).map(view => view.keyLabels.length))
 
 function mulberry32(seed) {
   return function() {
@@ -32,25 +106,8 @@ function pad2(n) {
   return String(n).padStart(2, '0')
 }
 
-function buildPaths(count) {
-  const paths = []
-  let i = 0
-  while (paths.length < count) {
-    const root = PATH_ROOTS[i % PATH_ROOTS.length]
-    const leaf = PATH_LEAVES[Math.floor(i / PATH_ROOTS.length) % PATH_LEAVES.length]
-    const suffix = String(Math.floor(i / (PATH_ROOTS.length * PATH_LEAVES.length)) + 1).padStart(2, '0')
-    paths.push(`${root}/${leaf}/${suffix}`)
-    i++
-  }
-  return paths
-}
-
-function formatTimestamp(timestamp) {
-  return new Date(timestamp).toISOString().slice(0, 16).replace('T', ' ')
-}
-
-function timestampToSegments(timestamp) {
-  const d = new Date(timestamp)
+function splitReadingDate(readingDateMs) {
+  const d = new Date(Number(readingDateMs))
   return [
     d.getUTCFullYear(),
     d.getUTCMonth() + 1,
@@ -98,22 +155,41 @@ function lowerBound(rows, prefix) {
   return lo
 }
 
-export function createKeyspaceDemo(config = {}) {
+function buildSeries(prefix, count) {
+  const values = []
+  let i = 0
+  while (values.length < count) {
+    values.push(prefix + i + 1)
+    i++
+  }
+  return values
+}
+
+function buildDocs(config = {}) {
   const {
-    pathCount = 24,
-    days = 30,
-    eventsPerDay = 24,
-    metricsPerEvent = 6,
-    startDate = new Date('2024-01-01')
+    organizationCount = 6,
+    infrastructureCount = 8,
+    billingGroupCount = 5,
+    contractCount = 7,
+    machineCount = 24,
+    days = 21,
+    readingsPerDay = 16,
+    startDate = DEFAULT_START_DATE
   } = config
 
-  const paths = buildPaths(pathCount)
-  const rows = []
-  const events = []
-  const perEventMetricCount = Math.max(1, Math.min(metricsPerEvent, METRICS.length))
+  const organizations = buildSeries(100, organizationCount)
+  const infrastructures = buildSeries(200, infrastructureCount)
+  const billingGroups = buildSeries(300, billingGroupCount)
+  const contracts = buildSeries(400, contractCount)
+  const machines = buildSeries(1000, machineCount)
+  const docs = []
 
-  for (let pathIdx = 0; pathIdx < paths.length; pathIdx++) {
-    const path = paths[pathIdx]
+  for (let machineIdx = 0; machineIdx < machines.length; machineIdx++) {
+    const machine_id = machines[machineIdx]
+    const organization_id = organizations[machineIdx % organizations.length]
+    const infrastructure_id = infrastructures[machineIdx % infrastructures.length]
+    const billing_group_id = billingGroups[machineIdx % billingGroups.length]
+    const contract_id = contracts[machineIdx % contracts.length]
 
     for (let dayOffset = 0; dayOffset < days; dayOffset++) {
       const day = new Date(startDate)
@@ -121,81 +197,100 @@ export function createKeyspaceDemo(config = {}) {
       const year = day.getUTCFullYear()
       const month = day.getUTCMonth() + 1
       const date = day.getUTCDate()
-      const dayLabel = `${year}-${pad2(month)}-${pad2(date)}`
 
-      for (let eventIdx = 0; eventIdx < eventsPerDay; eventIdx++) {
-        const minuteOfDay = Math.floor((eventIdx / eventsPerDay) * 1440)
+      for (let readingIdx = 0; readingIdx < readingsPerDay; readingIdx++) {
+        const minuteOfDay = readingIdx
         const hour = Math.floor(minuteOfDay / 60)
         const minute = minuteOfDay % 60
-        const timestamp = new Date(Date.UTC(year, month - 1, date, hour, minute)).toISOString()
-        const eventSeed = keyToSeed([path, timestamp])
-        const eventRand = mulberry32(eventSeed)
-        const metricStart = Math.floor(eventRand() * METRICS.length)
-        const metricNames = Array.from({ length: perEventMetricCount }, (_, i) => METRICS[(metricStart + i) % METRICS.length])
-        const eventId = `${path}|${timestamp}`
+        const reading_date = Date.UTC(year, month - 1, date, hour, minute, 0, 0)
+        const seed = keyToSeed([machine_id, organization_id, infrastructure_id, billing_group_id, contract_id, reading_date])
+        const rand = mulberry32(seed)
 
-        const emitted = []
-        for (let metricIdx = 0; metricIdx < metricNames.length; metricIdx++) {
-          const metric = metricNames[metricIdx]
-          const metricSeed = keyToSeed([path, timestamp, metric, metricIdx])
-          const rand = mulberry32(metricSeed)
-          const pathBias = pathIdx * 9.5
-          const dayBias = dayOffset * 0.75
-          const timeWave = Math.sin((minuteOfDay / 1440) * Math.PI * 2 + pathIdx * 0.25) * 16
-          const metricBias = metricIdx * 3.25 + metric.length * 0.4
-          const noise = (rand() - 0.5) * 8
-          const value = Math.max(0, Math.round((70 + pathBias + dayBias + timeWave + metricBias + noise) * 10) / 10)
+        const interval = [5, 10, 15][Math.floor(rand() * 3)]
+        const cpu_mhz = Math.max(400, Math.round((1800 + machineIdx * 42 + dayOffset * 6 + rand() * 800) * 10) / 10)
+        const memory_mib = Math.max(512, Math.round((4096 + (machineIdx % 8) * 768 + rand() * 512) * 10) / 10)
+        const storage_gib = Math.max(50, Math.round((120 + (machineIdx % 5) * 24 + rand() * 30) * 10) / 10)
+        const disk_io_kilobytes_per_sec = Math.max(0, Math.round((65 + dayOffset * 2 + rand() * 140) * 10) / 10)
+        const lan_io_kilobits_per_sec = Math.max(0, Math.round((120 + (machineIdx % 6) * 18 + rand() * 160) * 10) / 10)
+        const wan_io_kilobits_per_sec = Math.max(0, Math.round((18 + (dayOffset % 7) * 4 + rand() * 40) * 10) / 10)
+        const consumption_wac = Math.max(0, Math.round((32 + machineIdx * 0.9 + dayOffset * 0.5 + rand() * 10) * 10) / 10)
+        const created_at = reading_date + Math.round(rand() * 90000)
 
-          const key = [path, year, month, date, hour, minute, metric]
-          const row = {
-            key,
-            path,
-            timestamp,
-            day: dayLabel,
-            metric,
-            value,
-            eventId
-          }
-          emitted.push(row)
-          rows.push(row)
-        }
-
-        events.push({
-          eventId,
-          path,
-          timestamp,
-          day: dayLabel,
-          emittedKeys: emitted.length,
-          metrics: metricNames,
-          firstValue: emitted[0]?.value ?? 0,
-          lastValue: emitted[emitted.length - 1]?.value ?? 0
+        const docId = `reading-${machine_id}-${dayOffset}-${readingIdx}`
+        docs.push({
+          _id: docId,
+          organization_id,
+          infrastructure_id,
+          billing_group_id,
+          contract_id,
+          machine_id,
+          reading_date,
+          interval,
+          cpu_mhz,
+          memory_mib,
+          storage_gib,
+          disk_io_kilobytes_per_sec,
+          lan_io_kilobits_per_sec,
+          wan_io_kilobits_per_sec,
+          consumption_wac,
+          created_at
         })
       }
     }
   }
 
-  rows.sort((a, b) => compareKeys(a.key, b.key))
-  events.sort((a, b) => compareKeys(
-    [a.path, ...timestampToSegments(a.timestamp)],
-    [b.path, ...timestampToSegments(b.timestamp)]
-  ))
+  return docs
+}
+
+function buildViewRows(docs, viewDef) {
+  return docs.map(doc => ({
+    docId: doc._id,
+    key: viewDef.buildKey(doc),
+    doc,
+    value: doc
+  })).sort((a, b) => compareKeys(a.key, b.key))
+}
+
+function aggregateDocs(docs) {
+  const count = docs.length
+  const stats = {}
+
+  for (const field of NUMERIC_FIELDS) {
+    const values = docs.map(doc => doc[field]).filter(value => value !== undefined && value !== null)
+    if (!values.length) continue
+
+    const sum = values.reduce((acc, value) => acc + Number(value), 0)
+    stats[field] = {
+      sum,
+      avg: sum / values.length,
+      min: Math.min(...values),
+      max: Math.max(...values),
+      count: values.length
+    }
+  }
+
+  return { stats, count }
+}
+
+export function createCouchViewDemo(config = {}) {
+  const docs = buildDocs(config)
+  const views = Object.fromEntries(
+    Object.entries(VIEW_DEFS).map(([name, viewDef]) => [name, buildViewRows(docs, viewDef)])
+  )
 
   return {
-    config: { pathCount, days, eventsPerDay, metricsPerEvent, startDate: new Date(startDate).toISOString() },
-    paths,
-    rows,
-    events,
-    metrics: METRICS,
-    prefixLabels: PREFIX_LABELS,
-    maxPrefixDepth: MAX_PREFIX_DEPTH
+    docs,
+    views,
+    config: {
+      ...config,
+      startDate: new Date(config.startDate || DEFAULT_START_DATE).toISOString()
+    }
   }
 }
 
-export function buildPrefixFromSelection(path, timestamp, precision, metric) {
-  const base = [path, ...timestampToSegments(timestamp)]
-  if (precision <= 1) return [path]
-  if (precision < MAX_PREFIX_DEPTH) return base.slice(0, precision)
-  return [...base, metric]
+export function buildPrefixFromSelection(key, precision) {
+  const depth = Math.max(1, Math.min(key.length, Math.round(precision)))
+  return key.slice(0, depth)
 }
 
 export function sliceByPrefixRange(rows, prefix) {
@@ -217,11 +312,45 @@ export function describePrefixRange(prefix) {
 }
 
 export function formatKey(key) {
-  return key.map(part => String(part)).join(' › ')
+  return JSON.stringify(key)
 }
 
 export function formatTimestampLabel(timestamp) {
-  return formatTimestamp(timestamp)
+  const value = Number(timestamp)
+  if (Number.isFinite(value)) {
+    return new Date(value).toISOString()
+  }
+  return String(timestamp)
 }
 
-export { METRICS, PREFIX_LABELS, MAX_PREFIX_DEPTH }
+export function formatReduceField(field, stat) {
+  if (!stat) return '—'
+  const formatNumber = value => Number.isFinite(value) ? value.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '—'
+  const formatDate = value => Number.isFinite(value) ? new Date(value).toISOString() : '—'
+
+  if (field === 'reading_date' || field === 'created_at') {
+    return {
+      sum: formatDate(stat.sum),
+      avg: formatDate(stat.avg),
+      min: formatDate(stat.min),
+      max: formatDate(stat.max),
+      count: stat.count
+    }
+  }
+
+  return {
+    sum: formatNumber(stat.sum),
+    avg: formatNumber(stat.avg),
+    min: formatNumber(stat.min),
+    max: formatNumber(stat.max),
+    count: stat.count
+  }
+}
+
+export {
+  VIEW_DEFS,
+  REDUCE_FIELDS,
+  DEFAULT_VIEW,
+  MAX_PREFIX_DEPTH,
+  aggregateDocs
+}

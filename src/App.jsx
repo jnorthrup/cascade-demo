@@ -1,41 +1,45 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react'
 import {
-  createKeyspaceDemo,
+  createCouchViewDemo,
   sliceByPrefixRange,
   describePrefixRange,
   buildPrefixFromSelection,
   formatKey,
   formatTimestampLabel,
-  PREFIX_LABELS,
-  MAX_PREFIX_DEPTH
+  formatReduceField,
+  VIEW_DEFS,
+  REDUCE_FIELDS,
+  DEFAULT_VIEW,
+  aggregateDocs
 } from './dayjobGenerator'
 import './styles.css'
 
 function App() {
   const [dataset, setDataset] = useState(null)
-  const [selectedPath, setSelectedPath] = useState('')
-  const [selectedEvent, setSelectedEvent] = useState('')
-  const [prefixDepth, setPrefixDepth] = useState(2)
-  const [selectedMetric, setSelectedMetric] = useState('requests')
-  const [viewMode, setViewMode] = useState('rows')
+  const [selectedView, setSelectedView] = useState(DEFAULT_VIEW)
+  const [selectedDocId, setSelectedDocId] = useState('')
+  const [prefixDepth, setPrefixDepth] = useState(1)
   const [isGenerating, setIsGenerating] = useState(false)
   const [generationConfig] = useState({
-    pathCount: 32,
+    organizationCount: 6,
+    infrastructureCount: 8,
+    billingGroupCount: 5,
+    contractCount: 7,
+    machineCount: 24,
     days: 21,
-    eventsPerDay: 16,
-    metricsPerEvent: 6,
-    startDate: new Date('2024-01-01')
+    readingsPerDay: 16,
+    startDate: new Date('2024-01-01T00:00:00Z')
   })
 
   const regenerateData = useCallback(() => {
     setIsGenerating(true)
     setTimeout(() => {
-      const next = createKeyspaceDemo(generationConfig)
+      const next = createCouchViewDemo(generationConfig)
+      const firstRows = next.views?.[DEFAULT_VIEW] || []
       setDataset(next)
-      setSelectedPath(next.paths[0] || '')
-      setSelectedEvent(next.events[0]?.eventId || '')
-      setPrefixDepth(2)
-      setSelectedMetric(next.metrics[0] || 'requests')
+      setSelectedView(DEFAULT_VIEW)
+      setSelectedDocId(firstRows[0]?.docId || '')
+      setPrefixDepth(VIEW_DEFS[DEFAULT_VIEW].keyLabels.length)
       setIsGenerating(false)
     }, 20)
   }, [generationConfig])
@@ -44,87 +48,75 @@ function App() {
     regenerateData()
   }, [regenerateData])
 
-  const paths = dataset?.paths || []
-  const events = dataset?.events || []
-  const rows = dataset?.rows || []
-  const metrics = dataset?.metrics || []
-  const rawPrefixDepth = Math.max(1, Math.min(prefixDepth, MAX_PREFIX_DEPTH))
+  const viewNames = Object.keys(VIEW_DEFS)
+  const currentViewDef = VIEW_DEFS[selectedView] || VIEW_DEFS[DEFAULT_VIEW]
+  const maxPrefixDepth = currentViewDef.keyLabels.length
+  const rawPrefixDepth = Math.max(1, Math.min(prefixDepth, maxPrefixDepth))
 
-  const selectedEventObject = useMemo(() => {
-    if (!selectedEvent) return null
-    return events.find(event => event.eventId === selectedEvent) || null
-  }, [events, selectedEvent])
+  const rows = dataset?.views?.[selectedView] || []
+
+  useEffect(() => {
+    if (!rows.length) {
+      if (selectedDocId) setSelectedDocId('')
+      return
+    }
+
+    if (!rows.some(row => row.docId === selectedDocId)) {
+      setSelectedDocId(rows[0].docId)
+    }
+  }, [rows, selectedDocId])
+
+  useEffect(() => {
+    setPrefixDepth(current => Math.min(current, maxPrefixDepth))
+  }, [maxPrefixDepth])
+
+  const selectedRow = useMemo(() => {
+    if (!rows.length) return null
+    return rows.find(row => row.docId === selectedDocId) || rows[0]
+  }, [rows, selectedDocId])
 
   const prefix = useMemo(() => {
-    if (!selectedEventObject) return []
-    return buildPrefixFromSelection(
-      selectedEventObject.path,
-      selectedEventObject.timestamp,
-      rawPrefixDepth,
-      selectedMetric
-    )
-  }, [selectedEventObject, rawPrefixDepth, selectedMetric])
+    if (!selectedRow) return []
+    return buildPrefixFromSelection(selectedRow.key, rawPrefixDepth)
+  }, [selectedRow, rawPrefixDepth])
 
   const prefixRows = useMemo(() => sliceByPrefixRange(rows, prefix), [rows, prefix])
-
-  const groupedByEvent = useMemo(() => {
-    const groups = new Map()
-    for (const row of prefixRows) {
-      const eventKey = `${row.path}|${row.timestamp}`
-      if (!groups.has(eventKey)) {
-        groups.set(eventKey, {
-          path: row.path,
-          timestamp: row.timestamp,
-          eventId: row.eventId,
-          rows: []
-        })
-      }
-      groups.get(eventKey).rows.push(row)
-    }
-    return Array.from(groups.values())
-  }, [prefixRows])
-
+  const reduceOutput = useMemo(() => aggregateDocs(prefixRows.map(row => row.doc)), [prefixRows])
   const rangeInfo = useMemo(() => describePrefixRange(prefix), [prefix])
 
-  const firstVisibleRows = useMemo(() => {
-    if (viewMode === 'events') return groupedByEvent.slice(0, 50)
-    return prefixRows.slice(0, 120)
-  }, [viewMode, groupedByEvent, prefixRows])
+  const visibleRows = prefixRows.slice(0, 120)
+  const reduceRows = REDUCE_FIELDS.map(field => ({
+    field,
+    data: formatReduceField(field, reduceOutput.stats?.[field])
+  }))
 
-  const selectedPathRows = useMemo(() => {
-    if (!selectedPath) return rows.slice(0, 120)
-    return rows.filter(row => row.path === selectedPath)
-  }, [rows, selectedPath])
-
-  const selectedPathEvents = useMemo(() => {
-    if (!selectedPath) return events.slice(0, 120)
-    return events.filter(event => event.path === selectedPath)
-  }, [events, selectedPath])
+  const selectedKeyPieces = selectedRow?.key.map((piece, idx) => ({
+    label: currentViewDef.keyLabels[idx] || `part ${idx + 1}`,
+    value: piece,
+    selected: idx < rawPrefixDepth
+  })) || []
 
   return (
     <div className="app">
       <header className="app-header">
-        <h1>Raw Keyspace Prefix Demo</h1>
+        <h1>Raw CouchDB View Demo</h1>
         <p className="subtitle">
-          A [path,timestamp] key can fan out into several emitted rows; the demo shows the raw keyspace slice, not a fabricated rollup view.
+          JSON mapreduce emits ordered array keys; the prefix slider narrows a real CouchDB-style startkey/endkey range, and the reducer panel shows the aggregated stats over the matching rows.
         </p>
       </header>
 
       <div className="app-toolbar">
         <div className="toolbar-group">
-          <label>Path:</label>
-          <select className="select" value={selectedPath} onChange={e => setSelectedPath(e.target.value)}>
-            {paths.map(path => <option key={path} value={path}>{path}</option>)}
-          </select>
-        </div>
-
-        <div className="toolbar-group">
-          <label>Event:</label>
-          <select className="select" value={selectedEvent} onChange={e => setSelectedEvent(e.target.value)}>
-            {selectedPathEvents.map(event => (
-              <option key={event.eventId} value={event.eventId}>
-                {formatTimestampLabel(event.timestamp)} · {event.emittedKeys} keys
-              </option>
+          <label>View:</label>
+          <select className="select" value={selectedView} onChange={e => {
+            const nextView = e.target.value
+            setSelectedView(nextView)
+            setPrefixDepth(VIEW_DEFS[nextView].keyLabels.length)
+            const nextRows = dataset?.views?.[nextView] || []
+            setSelectedDocId(nextRows[0]?.docId || '')
+          }}>
+            {viewNames.map(name => (
+              <option key={name} value={name}>{name}</option>
             ))}
           </select>
         </div>
@@ -134,28 +126,15 @@ function App() {
           <input
             type="range"
             min="1"
-            max={MAX_PREFIX_DEPTH}
+            max={maxPrefixDepth}
             step="1"
             value={rawPrefixDepth}
             onChange={e => setPrefixDepth(Number(e.target.value))}
-            style={{ width: 220 }}
+            style={{ width: 240 }}
           />
-          <span style={{ minWidth: 160 }}>{PREFIX_LABELS[rawPrefixDepth - 1] || `level ${rawPrefixDepth}`}</span>
-        </div>
-
-        <div className="toolbar-group">
-          <label>Metric:</label>
-          <select className="select" value={selectedMetric} onChange={e => setSelectedMetric(e.target.value)}>
-            {metrics.map(metric => <option key={metric} value={metric}>{metric}</option>)}
-          </select>
-        </div>
-
-        <div className="toolbar-group">
-          <label>View:</label>
-          <select className="select" value={viewMode} onChange={e => setViewMode(e.target.value)}>
-            <option value="rows">Rows in prefix range</option>
-            <option value="events">Events that emitted rows</option>
-          </select>
+          <span style={{ minWidth: 260 }}>
+            {currentViewDef.keyLabels.slice(0, rawPrefixDepth).join(' → ') || `level ${rawPrefixDepth}`}
+          </span>
         </div>
 
         <div className="toolbar-group">
@@ -165,9 +144,9 @@ function App() {
         </div>
 
         <div className="toolbar-group stats">
-          <span>Paths: {paths.length.toLocaleString()}</span>
-          <span>Events: {events.length.toLocaleString()}</span>
+          <span>Docs: {dataset?.docs?.length?.toLocaleString() || 0}</span>
           <span>Rows: {rows.length.toLocaleString()}</span>
+          <span>Match: {prefixRows.length.toLocaleString()}</span>
         </div>
       </div>
 
@@ -176,7 +155,7 @@ function App() {
           <div className="panel">
             <div className="panel-header">
               <span>Prefix Range</span>
-              <span className="level-count">[path,timestamp] → emitted rows</span>
+              <span className="level-count">group_level {rawPrefixDepth} / {maxPrefixDepth}</span>
             </div>
             <div className="panel-body">
               <div className="stat-grid">
@@ -189,16 +168,41 @@ function App() {
                   <div className="stat-value">{JSON.stringify(rangeInfo.endkey)}</div>
                 </div>
                 <div className="stat-item">
+                  <div className="stat-label">Matching docs</div>
+                  <div className="stat-value">{reduceOutput.count.toLocaleString()}</div>
+                </div>
+                <div className="stat-item">
                   <div className="stat-label">Matching rows</div>
                   <div className="stat-value">{prefixRows.length.toLocaleString()}</div>
                 </div>
-                <div className="stat-item">
-                  <div className="stat-label">Matching events</div>
-                  <div className="stat-value">{groupedByEvent.length.toLocaleString()}</div>
+              </div>
+
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontSize: '11px', color: 'var(--fg-muted)', textTransform: 'uppercase', marginBottom: 8 }}>
+                  Current view key
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {selectedKeyPieces.map(piece => (
+                    <span
+                      key={piece.label}
+                      style={{
+                        padding: '3px 8px',
+                        borderRadius: 4,
+                        border: `1px solid ${piece.selected ? 'var(--accent)' : 'var(--border)'}`,
+                        background: piece.selected ? 'var(--accent-dim)' : 'var(--bg)',
+                        color: piece.selected ? 'var(--accent-bright)' : 'var(--fg-muted)',
+                        fontSize: 11,
+                        fontFamily: 'var(--font-mono)'
+                      }}
+                    >
+                      {piece.label}={String(piece.value)}
+                    </span>
+                  ))}
                 </div>
               </div>
+
               <div style={{ marginTop: 12, fontSize: '11px', color: 'var(--fg-muted)' }}>
-                One event can emit several keys. The prefix decides how much of the keyspace you see.
+                CouchDB arrays collate lexicographically, so this prefix slice behaves like a real startkey/endkey scan over the selected view.
               </div>
             </div>
           </div>
@@ -207,92 +211,101 @@ function App() {
         <main className="main-content">
           <div className="panel">
             <div className="panel-header">
-              <span>{viewMode === 'rows' ? 'Raw Prefix Rows' : 'Event Fan-out'}</span>
-              <span className="level-count">
-                {viewMode === 'rows' ? `${firstVisibleRows.length.toLocaleString()} rows` : `${firstVisibleRows.length.toLocaleString()} events`}
-              </span>
+              <span>Map Rows</span>
+              <span className="level-count">{selectedView}</span>
             </div>
             <div className="panel-body">
-              {viewMode === 'rows' && (
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Key</th>
-                      <th>Value</th>
-                      <th>Metric</th>
-                      <th>Path</th>
-                      <th>Timestamp</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {firstVisibleRows.map(row => (
-                      <tr key={`${row.eventId}-${row.metric}`}>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Key</th>
+                    <th>Doc ID</th>
+                    <th>Reading date</th>
+                    <th>CPU</th>
+                    <th>Mem</th>
+                    <th>Disk IO</th>
+                    <th>LAN IO</th>
+                    <th>WAN IO</th>
+                    <th>Consumption</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleRows.map(row => {
+                    const doc = row.doc
+                    const selected = row.docId === selectedRow?.docId
+                    return (
+                      <tr
+                        key={row.docId}
+                        onClick={() => setSelectedDocId(row.docId)}
+                        style={{ cursor: 'pointer', background: selected ? 'rgba(0, 160, 255, 0.08)' : 'transparent' }}
+                      >
                         <td>{formatKey(row.key)}</td>
-                        <td>{row.value.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
-                        <td>{row.metric}</td>
-                        <td>{row.path}</td>
-                        <td>{formatTimestampLabel(row.timestamp)}</td>
+                        <td>{row.docId}</td>
+                        <td>{formatTimestampLabel(doc.reading_date)}</td>
+                        <td>{doc.cpu_mhz.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                        <td>{doc.memory_mib.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                        <td>{doc.disk_io_kilobytes_per_sec.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                        <td>{doc.lan_io_kilobits_per_sec.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                        <td>{doc.wan_io_kilobits_per_sec.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                        <td>{doc.consumption_wac.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-
-              {viewMode === 'events' && (
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Path</th>
-                      <th>Timestamp</th>
-                      <th>Emitted keys</th>
-                      <th>Metrics</th>
-                      <th>First</th>
-                      <th>Last</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {firstVisibleRows.map(event => (
-                      <tr key={event.eventId}>
-                        <td>{event.path}</td>
-                        <td>{formatTimestampLabel(event.timestamp)}</td>
-                        <td>{event.emittedKeys}</td>
-                        <td>{event.metrics.join(', ')}</td>
-                        <td>{event.firstValue.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
-                        <td>{event.lastValue.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+                    )
+                  })}
+                </tbody>
+              </table>
             </div>
           </div>
 
           <div className="panel fwf-panel">
             <div className="panel-header">
-              <span>Keyspace Metaphor</span>
-              <span className="level-count">raw keys only</span>
+              <span>Reduce Output</span>
+              <span className="level-count">{selectedView}/reduce</span>
             </div>
             <div className="panel-body">
               <div className="stat-grid">
                 <div className="stat-item">
-                  <div className="stat-label">Selected path</div>
-                  <div className="stat-value">{selectedPath || '—'}</div>
+                  <div className="stat-label">count</div>
+                  <div className="stat-value">{reduceOutput.count.toLocaleString()}</div>
                 </div>
                 <div className="stat-item">
-                  <div className="stat-label">Selected event</div>
-                  <div className="stat-value">{selectedEventObject ? formatTimestampLabel(selectedEventObject.timestamp) : '—'}</div>
+                  <div className="stat-label">first row key</div>
+                  <div className="stat-value">{prefixRows[0] ? JSON.stringify(prefixRows[0].key) : '—'}</div>
                 </div>
                 <div className="stat-item">
-                  <div className="stat-label">Emitted rows for event</div>
-                  <div className="stat-value">{selectedEventObject?.emittedKeys ?? 0}</div>
+                  <div className="stat-label">last row key</div>
+                  <div className="stat-value">{prefixRows[prefixRows.length - 1] ? JSON.stringify(prefixRows[prefixRows.length - 1].key) : '—'}</div>
                 </div>
                 <div className="stat-item">
-                  <div className="stat-label">Prefix precision</div>
-                  <div className="stat-value">{PREFIX_LABELS[rawPrefixDepth - 1] || `level ${rawPrefixDepth}`}</div>
+                  <div className="stat-label">reduce fields</div>
+                  <div className="stat-value">{REDUCE_FIELDS.length}</div>
                 </div>
               </div>
-              <div style={{ marginTop: 12, fontSize: '11px', color: 'var(--fg-muted)' }}>
-                The key fan-out is the point: one [path,timestamp] event can yield several emitted rows, and prefix range selection decides how much of that ordered space you inspect.
+
+              <div style={{ marginTop: 16 }}>
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Field</th>
+                      <th>Sum</th>
+                      <th>Avg</th>
+                      <th>Min</th>
+                      <th>Max</th>
+                      <th>Count</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reduceRows.map(row => (
+                      <tr key={row.field}>
+                        <td>{row.field}</td>
+                        <td>{row.data.sum}</td>
+                        <td>{row.data.avg}</td>
+                        <td>{row.data.min}</td>
+                        <td>{row.data.max}</td>
+                        <td>{row.data.count}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
@@ -301,7 +314,7 @@ function App() {
 
       <footer className="app-footer">
         <p>
-          Raw keyspace demo · no map/reduce layer · hierarchical prefix selection over emitted keys
+          CouchDB view demo · real array keys · real prefix range · real reducer stats over generated docs
         </p>
       </footer>
     </div>

@@ -1,6 +1,6 @@
 # Cascade Demo
 
-A small Vite + React demo for exploring a raw keyspace built from ordered `[path, timestamp, metric]`-style keys.
+A small Vite + React demo for exploring JSON mapreduce array keys with a sliding prefix length.
 
 This version focuses on the core idea you called out:
 
